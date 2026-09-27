@@ -1,4 +1,10 @@
 import * as Sentry from '@sentry/nestjs';
+import { startTracing } from './common/tracing/tracing';
+
+// Initialize OpenTelemetry tracing FIRST
+if (process.env.OTEL_ENABLED !== 'false') {
+  startTracing();
+}
 
 // Initialize Sentry BEFORE loading any other module
 Sentry.init({
@@ -20,8 +26,15 @@ import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
 import { RateLimitInterceptor } from './common/interceptors/rate-limit.interceptor';
 import { ConfigService } from '@nestjs/config';
 import { LoggerService } from './common/services/logger.service';
+import { registerGracefulShutdown } from './config/graceful-shutdown';
+import { OpenApiDocumentRegistryService } from './common/validation/openapi-document-registry.service';
+import { EnvironmentVariables } from './config/environment-variables';
 
 const bootstrapLogger = new Logger('Bootstrap');
+
+// Graceful shutdown state
+let isShuttingDown = false;
+let activeConnections = 0;
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, {
@@ -32,20 +45,22 @@ async function bootstrap() {
   const loggerService = app.get(LoggerService);
   app.useLogger(loggerService);
 
-  const configService = app.get(ConfigService);
+  const configService: ConfigService<EnvironmentVariables, true> =
+    app.get(ConfigService);
 
   // Parse CORS origins from environment variable
   const corsOrigins = configService
-    .get<string>('CORS_ORIGINS')
+    .get('CORS_ORIGINS', { infer: true })
     ?.split(',')
     .map((origin) => origin.trim()) || [
-    configService.get<string>('FRONTEND_URL') || 'http://localhost:3001',
+    configService.get('FRONTEND_URL', { infer: true }) ||
+      'http://localhost:3000',
   ];
 
   app.enableCors({
     origin: corsOrigins,
     credentials:
-      configService.get<string>('CORS_CREDENTIALS') === 'true' || true,
+      configService.get('CORS_CREDENTIALS', { infer: true }) === 'true' || true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
     allowedHeaders: [
       'Content-Type',
@@ -72,14 +87,16 @@ async function bootstrap() {
       'security.txt',
       '.well-known',
       'developer-portal',
+      'metrics',
     ],
   });
 
   // Configure request size limits
   const jsonLimit =
-    configService.get<string>('REQUEST_SIZE_LIMIT_JSON') || '1mb';
+    configService.get('REQUEST_SIZE_LIMIT_JSON', { infer: true }) || '1mb';
   const urlencodedLimit =
-    configService.get<string>('REQUEST_SIZE_LIMIT_URLENCODED') || '1mb';
+    configService.get('REQUEST_SIZE_LIMIT_URLENCODED', { infer: true }) ||
+    '1mb';
   const rawBodySaver = (
     req: express.Request & { rawBody?: string },
     _res: express.Response,
@@ -89,6 +106,21 @@ async function bootstrap() {
       req.rawBody = buffer.toString('utf8');
     }
   };
+
+  // Stamp request start time as the outermost layer so wall-clock latency
+  // includes auth, guards, and all middleware — including rejected 401/403s.
+  if (process.env.RESPONSE_TIME_ENABLED !== 'false') {
+    app.use(
+      (
+        req: express.Request & { _startTime?: number },
+        _res: express.Response,
+        next: express.NextFunction,
+      ) => {
+        req._startTime = Date.now();
+        next();
+      },
+    );
+  }
 
   app.use(express.json({ limit: jsonLimit, verify: rawBodySaver }));
   app.use(
@@ -108,7 +140,8 @@ async function bootstrap() {
   );
 
   // Enhanced ValidationPipe configuration
-  const isProduction = configService.get<string>('NODE_ENV') === 'production';
+  const isProduction =
+    configService.get('NODE_ENV', { infer: true }) === 'production';
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,
@@ -136,7 +169,8 @@ async function bootstrap() {
     .setContact('Chioma', 'https://chioma.app', 'support@chioma.app')
     .setLicense('Open Source', 'https://github.com/chioma/chioma')
     .addServer(
-      configService.get<string>('API_BASE_URL') || 'http://localhost:5000',
+      configService.get('API_BASE_URL', { infer: true }) ||
+        'http://localhost:5000',
       'Default',
     )
     .addBearerAuth(
@@ -174,6 +208,11 @@ async function bootstrap() {
       `${controllerKey}_${methodKey}`,
   });
 
+  // Make the generated schema available to ResponseSchemaValidationInterceptor
+  // so handlers annotated with @ValidateResponseSchema can be checked against
+  // it at runtime (see common/interceptors/response-schema-validation.interceptor.ts).
+  app.get(OpenApiDocumentRegistryService).setDocument(document);
+
   SwaggerModule.setup('api/docs', app, document, {
     swaggerOptions: {
       persistAuthorization: true,
@@ -184,8 +223,110 @@ async function bootstrap() {
     customSiteTitle: 'Chioma API Docs',
   });
 
+  registerGracefulShutdown(app, { logger: bootstrapLogger });
+
   const port = process.env.PORT ?? 5000;
-  await app.listen(port);
+  const server = await app.listen(port);
   bootstrapLogger.log(`Application started on port ${port}`);
+
+  // ==================== GRACEFUL SHUTDOWN ====================
+  // Track active connections
+  server.on('connection', (conn) => {
+    activeConnections++;
+    conn.on('close', () => {
+      activeConnections--;
+    });
+  });
+
+  // Handle graceful shutdown signals
+  const gracefulShutdown = async (signal: string) => {
+    if (isShuttingDown) {
+      bootstrapLogger.warn(`Shutdown already in progress, ignoring ${signal}`);
+      return;
+    }
+
+    isShuttingDown = true;
+    bootstrapLogger.log(`Received ${signal}, starting graceful shutdown...`);
+
+    // Stop accepting new connections
+    server.close(async () => {
+      bootstrapLogger.log('HTTP server closed');
+    });
+
+    // Wait for active connections to close (with timeout)
+    const shutdownTimeout = parseInt(
+      process.env.GRACEFUL_SHUTDOWN_TIMEOUT || '30000',
+      10,
+    );
+    const startTime = Date.now();
+
+    while (activeConnections > 0) {
+      const elapsed = Date.now() - startTime;
+      if (elapsed > shutdownTimeout) {
+        bootstrapLogger.warn(
+          `Graceful shutdown timeout exceeded. Forcing exit with ${activeConnections} active connections.`,
+        );
+        break;
+      }
+      bootstrapLogger.log(
+        `Waiting for ${activeConnections} active connections to close...`,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+
+    // Close database connections
+    try {
+      const dataSource = app.get('DataSource');
+      if (dataSource?.isInitialized) {
+        bootstrapLogger.log('Closing database connections...');
+        await dataSource.destroy();
+        bootstrapLogger.log('Database connections closed');
+      }
+    } catch (error) {
+      bootstrapLogger.error('Error closing database connections:', error);
+    }
+
+    // Close Redis connections
+    try {
+      const redisService = app.get('RedisService');
+      if (redisService?.disconnect) {
+        bootstrapLogger.log('Closing Redis connections...');
+        await redisService.disconnect();
+        bootstrapLogger.log('Redis connections closed');
+      }
+    } catch (error) {
+      bootstrapLogger.error('Error closing Redis connections:', error);
+    }
+
+    // Close NestJS application
+    await app.close();
+    bootstrapLogger.log('Application closed successfully');
+    process.exit(0);
+  };
+
+  // Register signal handlers
+  process.on('SIGTERM', () => {
+    void gracefulShutdown('SIGTERM');
+  });
+  process.on('SIGINT', () => {
+    void gracefulShutdown('SIGINT');
+  });
+
+  // Handle uncaught exceptions
+  process.on('uncaughtException', (error) => {
+    bootstrapLogger.error('Uncaught Exception:', error);
+    gracefulShutdown('uncaughtException');
+  });
+
+  // Handle unhandled promise rejections
+  process.on('unhandledRejection', (reason, promise) => {
+    bootstrapLogger.error(
+      'Unhandled Rejection at:',
+      promise,
+      'reason:',
+      reason,
+    );
+    gracefulShutdown('unhandledRejection');
+  });
 }
 void bootstrap();

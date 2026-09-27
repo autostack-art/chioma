@@ -25,10 +25,14 @@ pub struct Escrow {
     pub id: BytesN<32>,
     /// The party depositing funds (tenant)
     pub depositor: Address,
-    /// The party who benefits from the deposit (landlord)
+    /// The party who benefits from the deposit (landlord/admin)
     pub beneficiary: Address,
     /// The admin/arbiter who can resolve disputes
     pub arbiter: Address,
+    /// Platform governance address receiving 5% on rent release
+    pub platform_governance: Address,
+    /// Agent/referral address receiving 5% on rent release
+    pub agent_referral: Address,
     /// Amount of funds in the escrow
     pub amount: i128,
     /// Token contract address (USDC, XLM, etc.)
@@ -136,4 +140,6 @@ pub enum DataKey {
     BlockCallCount(u64, String),
     /// System admin address for emergency operations
     SystemAdmin,
+    /// Upgrade proposal
+    UpgradeProposal(String),
 }

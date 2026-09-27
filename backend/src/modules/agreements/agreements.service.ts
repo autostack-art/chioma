@@ -17,15 +17,23 @@ import { RecordPaymentDto } from './dto/record-payment.dto';
 import { TerminateAgreementDto } from './dto/terminate-agreement.dto';
 import { QueryAgreementsDto } from './dto/query-agreements.dto';
 import { RenewAgreementDto } from './dto/renew-agreement.dto';
+import { SignAgreementDto } from './dto/sign-agreement.dto';
 import { AuditService } from '../audit/audit.service';
 import { ReviewPromptService } from '../reviews/review-prompt.service';
 import { ChiomaContractService } from '../stellar/services/chioma-contract.service';
+import { AgreementNftService } from './agreement-nft.service';
 import { BlockchainSyncService } from './blockchain-sync.service';
 import { EscrowIntegrationService } from './escrow-integration.service';
 import { TemplateRenderingService } from './template-rendering.service';
 import { PDFGenerationService } from './pdf-generation.service';
 import { Locked, LockService } from '../../common/lock';
 import { Idempotent, IdempotencyService } from '../../common/idempotency';
+import { AgreementStateService } from './state-machines/agreement-state-machine.service';
+import { EventEmitter2 } from '@nestjs/event-emitter';
+import { AgreementStatusChangedEvent } from './events/agreement-status-changed.event';
+import { PaginationUtils } from '../../common/utils';
+import { PaginatedResponseDto } from '../../common/dto/paginated-response.dto';
+import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 
 @Injectable()
 export class AgreementsService {
@@ -39,12 +47,15 @@ export class AgreementsService {
     private readonly auditService: AuditService,
     private readonly reviewPromptService: ReviewPromptService,
     private readonly chiomaContract: ChiomaContractService,
+    private readonly agreementNftService: AgreementNftService,
     private readonly blockchainSync: BlockchainSyncService,
     private readonly escrowIntegration: EscrowIntegrationService,
     private readonly templateService: TemplateRenderingService,
     private readonly pdfService: PDFGenerationService,
     private readonly lockService: LockService,
     private readonly idempotencyService: IdempotencyService,
+    private readonly stateService: AgreementStateService,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
   @Locked({
@@ -92,8 +103,41 @@ export class AgreementsService {
   }
 
   async findAll(query: QueryAgreementsDto) {
-    const [data, total] = await this.agreementRepository.findAndCount();
-    return { data, total, page: query.page || 1, limit: query.limit || 10 };
+    const {
+      status,
+      landlordId,
+      tenantId,
+      agentId,
+      propertyId,
+      page,
+      limit,
+      sortBy,
+      sortOrder,
+    } = query;
+
+    const whereClause: any = {};
+    if (status) whereClause.status = status;
+    if (landlordId) whereClause.landlordId = landlordId;
+    if (tenantId) whereClause.userId = tenantId; // assuming user_id is tenant
+    if (agentId) whereClause.agentId = agentId;
+    if (propertyId) whereClause.propertyId = propertyId;
+
+    const currentPage = page || 1;
+    const pageSize = limit || 20;
+
+    const [data, total] = await this.agreementRepository.findAndCount({
+      where: whereClause,
+      order: { [sortBy || 'createdAt']: sortOrder || 'DESC' },
+      skip: PaginationUtils.calculateOffset(currentPage, pageSize),
+      take: pageSize,
+    });
+
+    return PaginationUtils.buildPaginationResponse(
+      data,
+      total,
+      currentPage,
+      pageSize,
+    );
   }
 
   async findOne(id: string) {
@@ -107,6 +151,7 @@ export class AgreementsService {
 
   async update(id: string, dto: UpdateAgreementDto) {
     const agreement = await this.findOne(id);
+    const oldStatus = agreement.status;
     const {
       startDate: startDateStr,
       endDate: endDateStr,
@@ -115,7 +160,15 @@ export class AgreementsService {
       moveOutDate: moveOutDateStr,
       ...rest
     } = dto;
+
+    // Apply non-status changes first (Object.assign will include status if present)
+    if (rest.status) {
+      // Validate status transition if status is being changed
+      this.stateService.validateTransition(agreement.status, rest.status);
+    }
+
     Object.assign(agreement, rest);
+
     if (startDateStr !== undefined) {
       agreement.startDate = startDateStr ? new Date(startDateStr) : null;
     }
@@ -140,10 +193,20 @@ export class AgreementsService {
         throw new BadRequestException('End date must be after start date');
       }
     }
+
+    const newStatus = agreement.status;
+    // Emit event if status changed
+    if (newStatus !== oldStatus) {
+      this.eventEmitter.emit(
+        'agreement.status.changed',
+        new AgreementStatusChangedEvent(id, oldStatus, newStatus),
+      );
+    }
+
     return await this.agreementRepository.save(agreement);
   }
 
-  @Locked({ key: (id: string) => `agreement:terminate:${id}`, ttlMs: 5000 })
+  @Locked({ key: (id: string) => `agreement:renew:${id}`, ttlMs: 5000 })
   async renew(id: string, dto: RenewAgreementDto) {
     const agreement = await this.findOne(id);
     if (agreement.renewalOption !== true) {
@@ -153,18 +216,70 @@ export class AgreementsService {
           : 'Set renewalOption to true on the agreement before renewing.',
       );
     }
+    // Only allow renewal for ACTIVE agreements; EXPIRED cannot be renewed
+    if (agreement.status === AgreementStatus.EXPIRED) {
+      throw new BadRequestException('Cannot renew an expired agreement.');
+    }
     const months = dto.extendMonths ?? 12;
     const base = agreement.endDate ? new Date(agreement.endDate) : new Date();
     const newEnd = new Date(base.getTime());
     newEnd.setMonth(newEnd.getMonth() + months);
     agreement.endDate = newEnd;
-    if (
-      agreement.status === AgreementStatus.EXPIRED ||
-      agreement.status === AgreementStatus.ACTIVE
-    ) {
-      agreement.status = AgreementStatus.ACTIVE;
+
+    // Validate status transition to ACTIVE (if not already active, it's a change)
+    this.stateService.validateTransition(
+      agreement.status,
+      AgreementStatus.ACTIVE,
+    );
+    const oldStatus = agreement.status;
+    agreement.status = AgreementStatus.ACTIVE;
+
+    const saved = await this.agreementRepository.save(agreement);
+
+    // Emit event if status changed
+    if (agreement.status !== oldStatus) {
+      this.eventEmitter.emit(
+        'agreement.status.changed',
+        new AgreementStatusChangedEvent(
+          id,
+          oldStatus,
+          AgreementStatus.ACTIVE,
+          'Lease renewal',
+        ),
+      );
     }
-    return await this.agreementRepository.save(agreement);
+
+    return saved;
+  }
+
+  @Locked({ key: (id: string) => `agreement:sign:${id}`, ttlMs: 10000 })
+  @Idempotent({
+    ttlMs: 604_800_000,
+    key: (id: string, dto: SignAgreementDto) =>
+      dto?.idempotencyKey ? `agreement:sign:${id}:${dto.idempotencyKey}` : null,
+    requireKey: false,
+  })
+  async sign(id: string, _dto: SignAgreementDto) {
+    const agreement = await this.findOne(id);
+    const oldStatus = agreement.status;
+    this.stateService.validateTransition(
+      agreement.status,
+      AgreementStatus.SIGNED,
+    );
+    agreement.status = AgreementStatus.SIGNED;
+    const saved = await this.agreementRepository.save(agreement);
+
+    this.eventEmitter.emit(
+      'agreement.status.changed',
+      new AgreementStatusChangedEvent(
+        id,
+        oldStatus,
+        AgreementStatus.SIGNED,
+        'Agreement signed',
+      ),
+    );
+
+    return saved;
   }
 
   async getFees(id: string, daysPastDue?: number) {
@@ -208,8 +323,39 @@ export class AgreementsService {
 
   async terminate(id: string, _dto: TerminateAgreementDto) {
     const agreement = await this.findOne(id);
+    const oldStatus = agreement.status;
+    // Validate transition to TERMINATED
+    this.stateService.validateTransition(
+      agreement.status,
+      AgreementStatus.TERMINATED,
+    );
     agreement.status = AgreementStatus.TERMINATED;
-    return await this.agreementRepository.save(agreement);
+    const saved = await this.agreementRepository.save(agreement);
+    this.eventEmitter.emit(
+      'agreement.status.changed',
+      new AgreementStatusChangedEvent(
+        id,
+        oldStatus,
+        AgreementStatus.TERMINATED,
+        'Agreement terminated',
+      ),
+    );
+
+    try {
+      await this.agreementNftService.burnNftForAgreement(
+        id,
+        'AgreementTerminated',
+      );
+    } catch (error) {
+      this.logger.error(
+        `Failed to burn NFT obligation for terminated agreement ${id}`,
+        error,
+      );
+    }
+
+    await this.promptLeaseReviewSafely(id);
+
+    return saved;
   }
 
   async recordPayment(id: string, dto: RecordPaymentDto) {
@@ -222,8 +368,71 @@ export class AgreementsService {
     return await this.paymentRepository.save(payment);
   }
 
-  async getPayments(id: string) {
-    return await this.paymentRepository.find({ where: { agreementId: id } });
+  async getPayments(
+    id: string,
+    query: PaginationQueryDto,
+  ): Promise<PaginatedResponseDto<Payment>> {
+    const page = query.page || 1;
+    const limit = query.limit || 20;
+    PaginationUtils.validatePagination(page, limit);
+
+    const [data, total] = await this.paymentRepository.findAndCount({
+      where: { agreementId: id },
+      relations: ['user', 'paymentMethodRelation'],
+      order: { createdAt: 'DESC' },
+      skip: PaginationUtils.calculateOffset(page, limit),
+      take: limit,
+    });
+
+    return PaginationUtils.buildPaginationResponse(data, total, page, limit);
+  }
+
+  /**
+   * Finds agreements by status without pagination (for internal/cron use).
+   */
+  async findByStatus(status: AgreementStatus): Promise<RentAgreement[]> {
+    return this.agreementRepository.find({ where: { status } });
+  }
+
+  /**
+   * Helper to update agreement status with state machine validation.
+   * Used by cron and other internal processes.
+   */
+  async updateStatusWithGuard(
+    id: string,
+    newStatus: AgreementStatus,
+    reason?: string,
+  ): Promise<RentAgreement> {
+    const agreement = await this.findOne(id);
+    const oldStatus = agreement.status;
+    this.stateService.validateTransition(oldStatus, newStatus);
+    agreement.status = newStatus;
+    const saved = await this.agreementRepository.save(agreement);
+    this.eventEmitter.emit(
+      'agreement.status.changed',
+      new AgreementStatusChangedEvent(id, oldStatus, newStatus, reason),
+    );
+
+    if (newStatus === AgreementStatus.EXPIRED) {
+      await this.promptLeaseReviewSafely(id);
+    }
+
+    return saved;
+  }
+
+  /**
+   * Sends the lease-end review prompt without letting a notification
+   * failure block the status transition that triggered it.
+   */
+  private async promptLeaseReviewSafely(agreementId: string): Promise<void> {
+    try {
+      await this.reviewPromptService.promptForLeaseReview(agreementId);
+    } catch (error) {
+      this.logger.error(
+        `Failed to send lease review prompt for agreement ${agreementId}`,
+        error,
+      );
+    }
   }
 
   async generateAgreementPdf(id: string): Promise<Buffer> {

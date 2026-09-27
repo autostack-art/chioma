@@ -23,10 +23,31 @@ export {
 } from './use-notifications';
 
 export {
+  useFavorites,
+  useFavoriteStatus,
+  useFavoriteCount,
+  useAddFavorite,
+  useRemoveFavorite,
+  useToggleFavorite,
+} from './use-favorites';
+
+export {
   useTransactions,
   useUserTransactions,
   useTransaction,
 } from './use-transactions';
+
+export {
+  useSavedSearches,
+  useCreateSavedSearch,
+  useDeleteSavedSearch,
+  toSavedSearchFilters,
+} from './use-saved-searches';
+export type {
+  SavedSearch,
+  SavedSearchFilters,
+  CreateSavedSearchPayload,
+} from './use-saved-searches';
 
 export {
   useAnchorTransactions,
@@ -70,7 +91,29 @@ export {
   useResolveSecurityIncident,
 } from './use-security-dashboard';
 
+export {
+  useAgreements,
+  useUserAgreements,
+  useAgreement,
+  useAgreementFees,
+  useCreateAgreement,
+  useUpdateAgreement,
+  useSignAgreement,
+  useTerminateAgreement,
+  useRenewAgreement,
+  useRecordPayment,
+} from './use-agreements';
+
+export type { AgreementSummary, AgreementResponse } from './use-agreements';
+
+export { useAvailability } from './use-availability';
+export type { AvailabilityDay } from './use-availability';
+
 export { useLandlordPropertyAnalytics } from './use-property-analytics';
+
+export { useFeesSummary } from './use-fees-summary';
+
+export { useReferrals } from './use-referrals';
 
 export { useOptimisticUpdate } from './use-optimistic-update';
 export type {
@@ -86,3 +129,27 @@ export type {
   CacheInvalidationConfig,
   UseCacheInvalidationResult,
 } from './use-cache-invalidation';
+
+export {
+  useSearchProperties,
+  useSearchUsers,
+  useSearchDocuments,
+  useSearchSuggest,
+} from './use-properties';
+export type { PropertySearchParams } from './use-properties';
+export {
+  useLandlordDocuments,
+  useSharedDocuments,
+  useDocument,
+  useUploadDocument,
+  useDeleteDocument,
+  useArchiveDocument,
+  useShareDocument,
+  useUpdateDocument,
+} from './use-landlord-documents';
+export type {
+  DocumentRecord,
+  DocumentStatus,
+  DocumentType,
+  DocumentFilters,
+} from './use-landlord-documents';
