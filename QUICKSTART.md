@@ -1,23 +1,24 @@
-# Quickstart
+# Quickstart: clone → running full stack
 
-The single path from a fresh clone to a running Chioma stack (Postgres + Redis, NestJS backend, Next.js frontend, Soroban contracts). Sub-project READMEs link here instead of repeating these steps.
+This is the **single source of truth** for local setup. The READMEs and `CONTRIBUTING.md` files in `backend/`, `frontend/`, and `contract/` link here instead of repeating these steps.
 
 ## 1. Prerequisites
 
-| Tool                          | Version                  | Needed for           |
-| ----------------------------- | ------------------------ | -------------------- |
-| Git                           | any recent               | cloning              |
-| Node.js                       | 20+                      | backend, frontend    |
-| pnpm                          | 10.x (`corepack enable`) | backend, frontend    |
-| Docker + Docker Compose       | recent                   | Postgres & Redis     |
-| Rust + `wasm32v1-none` target | stable                   | contracts (optional) |
-| Stellar CLI                   | latest                   | contracts (optional) |
+| Tool                          | Version                  | Needed for                     |
+| ----------------------------- | ------------------------ | ------------------------------ |
+| Git                           | any recent               | cloning                        |
+| Node.js                       | 20 LTS or newer          | backend + frontend             |
+| pnpm                          | 10.x (`corepack enable`) | backend + frontend             |
+| Docker + Docker Compose       | recent                   | Postgres + Redis               |
+| Rust + `wasm32v1-none` target | stable                   | smart contracts (optional)     |
+| Stellar CLI                   | latest                   | deploying contracts (optional) |
 
 ## 2. Clone
 
 ```bash
 git clone https://github.com/chioma-housing-protocol-I/chioma.git
 cd chioma
+pnpm install   # root git hooks (husky, lint-staged)
 ```
 
 ## 3. Start Postgres and Redis
@@ -27,9 +28,9 @@ cd backend
 docker compose up -d db redis
 ```
 
-This exposes Postgres on **5433** (user `postgres`, password `postgres`, db `chioma_db`) and Redis on **6379**.
+This exposes Postgres on **localhost:5433** (user `postgres`, password `postgres`, database `chioma_db`) and Redis on **localhost:6379**.
 
-## 4. Backend (http://localhost:3000)
+## 4. Backend (NestJS API, port 3000)
 
 ```bash
 # still in backend/
@@ -38,22 +39,27 @@ cp .env.example .env
 
 Edit `.env` so the database settings match the Docker container:
 
-```env
+```dotenv
+DB_HOST=localhost
 DB_PORT=5433
+DB_USERNAME=postgres
 DB_PASSWORD=postgres
+DB_NAME=chioma_db
 ```
 
-Then install, migrate and run:
+Then install, migrate, seed, and run:
 
 ```bash
 pnpm install
 pnpm run migration:run
+pnpm run seed:all        # optional: admin/agent/tenant/landlord demo users
 pnpm run start:dev
 ```
 
-The API listens on `PORT` from `.env` (default `3000`).
+- API: http://localhost:3000/api
+- Swagger docs: http://localhost:3000/api/docs
 
-## 5. Frontend (http://localhost:3001)
+## 5. Frontend (Next.js, port 3001)
 
 In a new terminal from the repo root:
 
@@ -64,39 +70,42 @@ pnpm install
 pnpm dev -p 3001
 ```
 
-Open http://localhost:3001. Port 3001 is used so the frontend does not clash with the backend on 3000.
+Open http://localhost:3001. The backend already uses port 3000, so the frontend must run on 3001.
 
-## 6. Contracts (optional)
+## 6. Smart contracts (optional)
+
+Only needed if you are working on the Soroban contracts.
 
 ```bash
-cd contract
 rustup target add wasm32v1-none
-cargo test
-stellar contract build
+cd contract
+cargo test               # run contract tests
+stellar contract build   # build all contracts to WASM
 ```
 
-To point the frontend at a deployed contract, set `NEXT_PUBLIC_CHIOMA_CONTRACT_ID` in `frontend/.env.local`.
+To point the frontend at a deployed contract, set `NEXT_PUBLIC_CHIOMA_CONTRACT_ID` in `frontend/.env.local`. Contract details are in [contract/README.md](./contract/README.md).
 
-## 7. Verify
+## 7. Check it works
 
-- `curl http://localhost:3000` returns a response from the API.
+- `curl http://localhost:3000/api/docs` returns the Swagger page.
 - http://localhost:3001 loads the app.
 - `docker compose ps` (in `backend/`) shows `chioma_db` and `chioma_redis` running.
 
 ## Before opening a PR
 
-Each package has a `check-all.sh` / Makefile that mirrors CI:
+Each package has a script that mirrors CI:
 
 ```bash
-cd backend && make ci      # or ./check-all.sh
-cd frontend && make ci
+cd backend  && ./check-all.sh
+cd frontend && make ci          # or ./check-all.sh
 cd contract && ./check-all.sh
 ```
 
-See the per-package `CONTRIBUTING.md` for coding conventions.
+See each package's `CONTRIBUTING.md` for coding conventions.
 
 ## Troubleshooting
 
-- **`ECONNREFUSED` on 5432** – `.env` still has `DB_PORT=5432`; the Docker DB is on `5433`.
-- **Port 3000 in use** – run the frontend with `-p 3001` (see step 5).
-- **Stop everything** – `cd backend && docker compose down` (add `-v` to wipe the database).
+- **`ECONNREFUSED 127.0.0.1:5432`** – the Docker Postgres listens on `5433`; set `DB_PORT=5433`.
+- **`password authentication failed`** – set `DB_PASSWORD=postgres` to match `backend/docker-compose.yml`.
+- **Port 3000 already in use** – the backend owns 3000; run the frontend with `-p 3001`.
+- **Reset the database** – `cd backend && docker compose down -v && docker compose up -d db redis`, then re-run migrations.
