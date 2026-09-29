@@ -1,5 +1,7 @@
 # Soroban Project
 
+> **Setting up locally?** Follow the root [QUICKSTART.md](../QUICKSTART.md) — the single path from clone to a running stack.
+
 ## Project Structure
 
 This repository uses the recommended structure for a Soroban project:

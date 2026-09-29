@@ -1,5 +1,7 @@
 # Smart Contract Contributing Guide
 
+> **Setting up locally?** Follow the root [QUICKSTART.md](../QUICKSTART.md) — the single path from clone to a running stack.
+
 This document provides comprehensive guidelines for contributing to the Chioma smart contracts. It covers Soroban contract architecture, development standards, security considerations, testing requirements, and CI/CD pipeline expectations.
 
 ## Table of Contents

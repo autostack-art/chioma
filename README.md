@@ -10,6 +10,10 @@ Our goal is to modernize rental transactions—especially in emerging markets—
 
 Telegram: https://t.me/chiomagroup
 
+## Getting Started
+
+New contributors: follow **[QUICKSTART.md](./QUICKSTART.md)** for one path from clone to a running full stack (database, backend, frontend, contracts).
+
 ## Figma
 
 https://www.figma.com/design/2iA2B5gmRupQtzjYv3LSx4/Chioma?node-id=0-1&t=KEwTSTGKUDT0ievI-1
