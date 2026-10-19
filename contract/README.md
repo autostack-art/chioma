@@ -1,5 +1,7 @@
 # Soroban Project
 
+> **Setup:** Local setup for the whole stack lives in the root [Quickstart](../README.md#quickstart-clone--running-full-stack). This document only covers contract-specific details.
+
 ## Project Structure
 
 This repository uses the recommended structure for a Soroban project:

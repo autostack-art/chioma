@@ -1,5 +1,7 @@
 # Backend Contributing Guide
 
+> **Setup:** Local setup for the whole stack lives in the root [Quickstart](../README.md#quickstart-clone--running-full-stack). This document only covers backend-specific details.
+
 This document provides comprehensive guidelines for contributing to the Chioma backend. It covers project architecture, development standards, testing requirements, and CI/CD pipeline expectations.
 
 ## Table of Contents
