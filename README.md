@@ -1,5 +1,7 @@
 # Chioma
 
+> **Setting up locally?** Follow the root [Quickstart](QUICKSTART.md) — it is the single documented path from clone to a running stack.
+
 **Chioma** is an open‑source platform built on the **Stellar blockchain** that connects **landlords (property owners), house agents, and tenants** through transparent, low‑cost, and programmable rental payments.
 
 Chioma focuses on what blockchains do best: **money movement, trust minimization, and verifiable agreements**, while keeping complex business logic off‑chain for usability and scale.
@@ -9,8 +11,6 @@ Our goal is to modernize rental transactions—especially in emerging markets—
 ---
 
 Telegram: https://t.me/chiomagroup
-
-> **New contributor?** Jump to the [Quickstart](#quickstart-clone--running-full-stack) to go from clone to a running stack.
 
 ## Figma
 
@@ -122,105 +122,7 @@ Stellar Network
 
 ---
 
-## Quickstart (clone → running full stack)
-
-This is the single source of truth for local setup. The `backend/`, `frontend/` and `contract/` docs link here instead of repeating it.
-
-### 1. Prerequisites
-
-| Tool | Version | Used by |
-| --- | --- | --- |
-| Git | any recent | all |
-| Node.js | 20 LTS or newer | backend, frontend |
-| pnpm | 10 (`corepack enable`) | backend, frontend |
-| Docker + Docker Compose | any recent | Postgres & Redis |
-| Rust + `wasm32v1-none` target | stable | contracts (optional) |
-| Stellar CLI | latest | contracts (optional) |
-
-### 2. Clone and install
-
-```bash
-git clone https://github.com/chioma-housing-protocol-I/chioma.git
-cd chioma
-corepack enable
-pnpm install                       # root tooling (husky, prettier)
-pnpm --dir backend install
-pnpm --dir frontend install
-```
-
-### 3. Start Postgres and Redis
-
-```bash
-docker compose -f backend/docker-compose.yml up -d db redis
-```
-
-This exposes Postgres on **localhost:5433** (user `postgres`, password `postgres`, db `chioma_db`) and Redis on **localhost:6379**.
-
-### 4. Configure environment
-
-```bash
-cp backend/.env.example backend/.env
-cp frontend/.env.example frontend/.env.local
-```
-
-Then edit `backend/.env` so it matches the Docker database:
-
-```dotenv
-DB_HOST=localhost
-DB_PORT=5433
-DB_USERNAME=postgres
-DB_PASSWORD=postgres
-DB_NAME=chioma_db
-```
-
-The remaining defaults (`PAYMENT_GATEWAY=mock`, `PORT=3000`, etc.) work for local development. The frontend defaults already point at `http://localhost:3000`.
-
-### 5. Run the backend (port 3000)
-
-```bash
-cd backend
-pnpm run migration:run
-pnpm run seed:all                  # optional: admin/agent/tenant/landlord users
-pnpm run start:dev
-```
-
-API: <http://localhost:3000/api> · Swagger docs: <http://localhost:3000/api/docs>
-
-### 6. Run the frontend (port 3001)
-
-In a second terminal:
-
-```bash
-cd frontend
-pnpm dev -p 3001
-```
-
-Open <http://localhost:3001>.
-
-### 7. Smart contracts (optional)
-
-The app runs without deploying contracts. To build and test them:
-
-```bash
-rustup target add wasm32v1-none
-cd contract
-cargo test
-stellar contract build
-```
-
-Deployed contract IDs go in `backend/.env` (`ESCROW_CONTRACT_ID`, `DISPUTE_CONTRACT_ID`) and `frontend/.env.local` (`NEXT_PUBLIC_CHIOMA_CONTRACT_ID`).
-
-### 8. Before opening a PR
-
-Each package mirrors its CI pipeline locally: `make ci` in `backend/` or `frontend/`, and `./check-all.sh` in `contract/`. Package-specific conventions live in [`backend/CONTRIBUTING.md`](backend/CONTRIBUTING.md), [`frontend/CONTRIBUTING.md`](frontend/CONTRIBUTING.md) and [`contract/CONTRIBUTING.md`](contract/CONTRIBUTING.md).
-
-### Troubleshooting
-
-- **`ECONNREFUSED 127.0.0.1:5432`**: `DB_PORT` is still `5432`; the Docker database listens on `5433`.
-- **Port 3000 already in use**: the frontend was started without `-p 3001`, or another process owns the port.
-- **`docker compose` not found**: use `docker-compose` (v1) or upgrade Docker.
-
----
+Major structural decisions are recorded as Architecture Decision Records in [`docs/adr/`](docs/adr/README.md). New structural decisions require an ADR.
 
 ## Open Source First
 
@@ -232,6 +134,21 @@ We welcome:
 - Reviewers
 - Anchor operators
 - Protocol researchers
+
+---
+
+## Security
+
+If you discover a security vulnerability, **please do not open a public issue.**
+
+Report it privately through one of the channels described in [SECURITY.md](./SECURITY.md):
+
+- **GitHub private vulnerability reporting** — Security tab → "Report a vulnerability"
+- **Email** — security@chioma.dev
+
+We follow a coordinated disclosure model and aim to acknowledge reports within 48 hours. See
+[SECURITY.md](./SECURITY.md) for full details on scope, response timelines, and responsible
+disclosure.
 
 ---
 
@@ -264,3 +181,7 @@ The wizard includes server-side AI helpers for:
 ### Draft Expiry
 
 Drafts automatically expire after **30 days** of inactivity. A cleanup task runs periodically to remove expired drafts.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).

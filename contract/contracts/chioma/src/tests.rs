@@ -266,9 +266,10 @@ fn test_create_agreement_success() {
     let events = env.events().all();
     assert_eq!(events.len(), 1);
     // Event structure: (contract_id, topics, data)
-    // Topics now include: ["agr_created", tenant, landlord]
+    // Topics now include: ["v1", "agr_created", tenant, landlord] (#1681
+    // added the leading schema-version topic segment)
     let event = events.last().unwrap();
-    assert_eq!(event.1.len(), 3); // 3 topics: event name + tenant + landlord
+    assert_eq!(event.1.len(), 4); // 4 topics: version + event name + tenant + landlord
 }
 
 #[test]
@@ -1484,4 +1485,127 @@ fn test_release_escrow_fails_when_frozen() {
 
     let result = client.try_release_escrow_with_token(&agreement_id, &payment_token);
     assert_eq!(result, Err(Ok(RentalError::InvalidState)));
+}
+
+#[test]
+fn test_freeze_escrow_unauthorized_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = create_contract(&env);
+
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+    let attacker = Address::generate(&env);
+    let payment_token = env
+        .register_stellar_asset_contract_v2(Address::generate(&env))
+        .address();
+
+    let config = Config {
+        fee_bps: 100,
+        fee_collector: Address::generate(&env),
+        paused: false,
+    };
+    client.initialize(&admin, &config);
+
+    let agreement_id = String::from_str(&env, "FREEZE_003");
+    client.create_agreement(&AgreementInput {
+        agreement_id: agreement_id.clone(),
+        admin: admin.clone(),
+        user,
+        agent: None,
+        terms: AgreementTerms {
+            monthly_rent: 1000,
+            security_deposit: 2000,
+            start_date: 100,
+            end_date: 1_000_000,
+            agent_commission_rate: 0,
+        },
+        payment_token,
+        metadata_uri: String::from_str(&env, ""),
+        attributes: Vec::new(&env),
+    });
+
+    let result = client.try_freeze_escrow(&attacker, &agreement_id);
+    assert_eq!(result, Err(Ok(RentalError::Unauthorized)));
+}
+
+#[test]
+fn test_unfreeze_escrow_unauthorized_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = create_contract(&env);
+
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+    let attacker = Address::generate(&env);
+    let payment_token = env
+        .register_stellar_asset_contract_v2(Address::generate(&env))
+        .address();
+
+    let config = Config {
+        fee_bps: 100,
+        fee_collector: Address::generate(&env),
+        paused: false,
+    };
+    client.initialize(&admin, &config);
+
+    let agreement_id = String::from_str(&env, "FREEZE_004");
+    client.create_agreement(&AgreementInput {
+        agreement_id: agreement_id.clone(),
+        admin: admin.clone(),
+        user,
+        agent: None,
+        terms: AgreementTerms {
+            monthly_rent: 1000,
+            security_deposit: 2000,
+            start_date: 100,
+            end_date: 1_000_000,
+            agent_commission_rate: 0,
+        },
+        payment_token,
+        metadata_uri: String::from_str(&env, ""),
+        attributes: Vec::new(&env),
+    });
+
+    client.freeze_escrow(&admin, &agreement_id);
+    let result = client.try_unfreeze_escrow(&attacker, &agreement_id);
+    assert_eq!(result, Err(Ok(RentalError::Unauthorized)));
+}
+
+#[test]
+fn test_freeze_escrow_missing_agreement_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = create_contract(&env);
+
+    let admin = Address::generate(&env);
+    let config = Config {
+        fee_bps: 100,
+        fee_collector: Address::generate(&env),
+        paused: false,
+    };
+    client.initialize(&admin, &config);
+
+    let missing_id = String::from_str(&env, "FREEZE_MISSING");
+    let result = client.try_freeze_escrow(&admin, &missing_id);
+    assert_eq!(result, Err(Ok(RentalError::AgreementNotFound)));
+}
+
+#[test]
+fn test_unfreeze_escrow_missing_agreement_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = create_contract(&env);
+
+    let admin = Address::generate(&env);
+    let config = Config {
+        fee_bps: 100,
+        fee_collector: Address::generate(&env),
+        paused: false,
+    };
+    client.initialize(&admin, &config);
+
+    let missing_id = String::from_str(&env, "UNFREEZE_MISSING");
+    let result = client.try_unfreeze_escrow(&admin, &missing_id);
+    assert_eq!(result, Err(Ok(RentalError::AgreementNotFound)));
 }
